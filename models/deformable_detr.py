@@ -79,32 +79,33 @@ class DeformableDETR(nn.Module):
 
     def __init__(self, backbone, position_encoding, transformer, num_classes, num_queries, num_feature_levels):
         super().__init__()
-        self.backbone = backbone
-        self.position_encoding = position_encoding
-        self.num_queries = num_queries
-        self.transformer = transformer
-        hidden_dim = transformer.hidden_dim
-        self.class_embed = nn.Linear(hidden_dim, num_classes)
-        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.num_feature_levels = num_feature_levels
-        self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
+        self.backbone = backbone # backbone,这里是resnet50
+        self.position_encoding = position_encoding # position_encoding,具体参见同目录下对应文件
+        self.num_queries = num_queries # object_queries的数量，默认是300
+        self.transformer = transformer # transformer模块
+        hidden_dim = transformer.hidden_dim # 隐藏层，默认256
+        self.class_embed = nn.Linear(hidden_dim, num_classes) # 最终产生分类的投影层
+        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3) # 最终产生框的投影层，总共3层拼在一起
+        self.num_feature_levels = num_feature_levels # 使用的特征图层数，默认是4
+        self.query_embed = nn.Embedding(num_queries, hidden_dim*2) # object_queries可学习的那个embedding
 
-        num_backbone_outs = backbone.num_outputs
-        input_proj_list = []
-        for _ in range(num_backbone_outs):
-            in_channels = backbone.get_backbone()[1][_]
+        num_backbone_outs = backbone.num_outputs # backbone能返回多少层，这个值是3
+        input_proj_list = [] # 这个玩意儿是用来把backbone的输出投影到transformer输入的
+        for _ in range(num_backbone_outs): # 将不同层（不同大小）的backbone的输出映射到相同大小
+            in_channels = backbone.get_backbone()[1][_] # 这里面这个[0]是模型，[1]是输出尺寸列表
             input_proj_list.append(nn.Sequential(
                 nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
                 nn.GroupNorm(32, hidden_dim),
-            ))
-        for _ in range(num_feature_levels - num_backbone_outs):
+            )) # 投影
+        for _ in range(num_feature_levels - num_backbone_outs): # 这循环在我们的参数下就运行一次
             input_proj_list.append(nn.Sequential(
                 nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
                 nn.GroupNorm(32, hidden_dim),
-            ))
+            )) # 把backbone的最后一层输出再做个卷积弄成更小的，论文里有张对应的图
             in_channels = hidden_dim
         self.input_proj = nn.ModuleList(input_proj_list)
 
+        # 给上面那几个模块初始化，细节不太懂，反正是copy的
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
         self.class_embed.bias.data = torch.ones(num_classes) * bias_value
@@ -114,9 +115,9 @@ class DeformableDETR(nn.Module):
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
 
-        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
-        num_pred = transformer.decoder.num_layers
+        num_pred = transformer.decoder.num_layers # 这玩意儿是最后预测使用几层decoder的feature_map，不使用两阶段方法就是这个数，否则这个数得+1表示在encoder输出层预测proposal
 
+        # 最后预测时得用num_pred层的feature_map，所以把单层的embed堆叠起来得到多层的embed
         nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
         self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
         self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
@@ -137,25 +138,23 @@ class DeformableDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
-        # backbone and mask
+        # 先拿backbone提个feature
         features = self.backbone(x)
+        # 把不同尺寸的mask通过插值插出来
         masks = []
         for x in features:
-            m = ms
+            m = ms 
             assert m is not None
             masks.append(interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0])
-
-        # positional encoding
+        # 计算positional_encoding
         pos = []
         for l in range(len(features)):
             pos.append(self.position_encoding(features[l], masks[l]).to(features[l].dtype))
-
-        # input projection
+        # 把backbone的feature投影到transformer空间
         srcs = []
         for l in range(len(features)):
             srcs.append(self.input_proj[l](features[l]))
-    
-        # add last feature level
+        # 投影多的那一层，backbone3层->transformer4层
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
             for l in range(_len_srcs, self.num_feature_levels):
@@ -169,10 +168,11 @@ class DeformableDETR(nn.Module):
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
-
+        # 把上面这一大堆丢进transformer
         query_embeds = self.query_embed.weight
         hs, init_reference, inter_references = self.transformer(srcs, masks, pos, query_embeds)
-
+        # hs是一个[6,4,300,256]的张量，表示6层，4个batch，300个object_queries的输出特征（256维）
+        # 另外那俩是用来算reference_points的（因为box预测的是个偏移量，加上reference_points的坐标才是框）
         outputs_classes = []
         outputs_coords = []
         for lvl in range(hs.shape[0]):
@@ -181,28 +181,21 @@ class DeformableDETR(nn.Module):
             else:
                 reference = inter_references[lvl - 1]
             reference = inverse_sigmoid(reference)
-            outputs_class = self.class_embed[lvl](hs[lvl])
-            tmp = self.bbox_embed[lvl](hs[lvl])
-            # print(f"lvl:{lvl}, outputs_bbox:{tmp}")
+            outputs_class = self.class_embed[lvl](hs[lvl]) # 预测类
+            tmp = self.bbox_embed[lvl](hs[lvl]) # 预测偏移量
             if reference.shape[-1] == 4:
                 tmp += reference
             else:
                 assert reference.shape[-1] == 2
                 tmp[..., :2] += reference
-                # print(f"lvl:{lvl}, tmp.shape:{tmp.shape}")
-            outputs_coord = tmp.sigmoid()
-            # print(f"lvl:{lvl}, outputs_class:{outputs_class}")
-            
+            outputs_coord = tmp.sigmoid() # 预测坐标
+            # 把每层预测的结果拼起来
             outputs_classes.append(outputs_class)
             outputs_coords.append(outputs_coord)
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
-
-        # print(outputs_class.shape)
-        # print(outputs_coord.shape)
+        # 返回的时候把所有层和最后一层分别返回一下，虽然感觉很唐，但是为了能跟后面的接口接上还是这么写了
         out = {'logits_all': outputs_class, 'boxes_all': outputs_coord, 'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-        # print(out['pred_logits'].shape)
-        # print(out['pred_boxes'].shape)
         return out
 
 

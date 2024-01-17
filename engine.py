@@ -39,13 +39,6 @@ def train_one_epoch_standard(model: torch.nn.Module,
         # Backward
         optimizer.zero_grad()
         loss.backward()
-        # for name, param in model.named_parameters():
-        #     if param.grad == None and param.requires_grad:
-        #         print(f"{name}, no grad!!!")
-        #     elif param.requires_grad:
-        #         print(f"{name}, grad ok.") 
-        # print(model.bbox_embedd.grad)
-
         if clip_max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_max_norm)
         optimizer.step()
