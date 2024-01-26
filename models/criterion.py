@@ -155,6 +155,31 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_domains(self, out, domain_label):
+        # loss_dict = {}
+        # pred_logits = out['pred_logits']
+        # pred_boxes = out['pred_boxes']
+        # for key in record_dict.keys():
+        #     if key.startswith("loss"):
+        #         if key == "loss_rpn_loc_pseudo" or key == "loss_box_reg_pseudo":
+        #             # pseudo bbox regression <- 0
+        #             loss_dict[key] = record_dict[key] * 0
+        #         elif key[-6:] == "pseudo":  # unsupervised loss
+        #             loss_dict[key] = (
+        #                 record_dict[key] *
+        #                 self.cfg.SEMISUPNET.UNSUP_LOSS_WEIGHT
+        #             )
+        #         elif (
+        #             key == "loss_D_img_s" or key == "loss_D_img_t"
+        #         ):  # set weight for discriminator
+        #             # import pdb
+        #             # pdb.set_trace()
+        #             loss_dict[key] = record_dict[key] * self.cfg.SEMISUPNET.DIS_LOSS_WEIGHT #Need to modify defaults and yaml
+        #         else:  # supervised loss
+        #             loss_dict[key] = record_dict[key] * 1
+
+        # losses = sum(loss_dict.values())   
+        # losses = {'loss_domain': loss_domains.sum() / num_boxes}     
+        # return losses
         pass
 
     def forward(self, out, annotations=None, domain_label=None, enable_mae=False):
@@ -181,8 +206,11 @@ class SetCriterion(nn.Module):
         loss_dict.update(self.loss_class(out['pred_logits'], annotations, indices, num_boxes))
         loss_dict.update(self.loss_boxes(out['pred_boxes'], annotations, indices, num_boxes))
         loss_dict.update(self.loss_giou(out['pred_boxes'], annotations, indices, num_boxes))
+        loss_dict.update(self.loss_domains(out['loss_domain'], annotations, indices, num_boxes))
+        #######################################
 
-        loss = self.coef_class * loss_dict['loss_ce'] + self.coef_boxes * loss_dict['loss_bbox'] + self.coef_giou * loss_dict['loss_giou']
+        loss = self.coef_class * loss_dict['loss_ce'] + self.coef_boxes * loss_dict['loss_bbox'] + \
+            self.coef_giou * loss_dict['loss_giou'] + self.coef_domain * loss_dict['loss_domain'] #+ self.coef_domain_bac * ????
 
         return loss, loss_dict
 
