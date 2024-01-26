@@ -98,6 +98,7 @@ def train_one_epoch_teaching(student_model: torch.nn.Module,
     for i in range(total_iters):
         # Source forward
         source_out = student_model(source_images, source_masks)
+        #######################################################
         source_loss, source_loss_dict = criterion(source_out, source_annotations, domain_label=0)
         # Target teacher forward
         with torch.no_grad():
@@ -125,6 +126,7 @@ def train_one_epoch_teaching(student_model: torch.nn.Module,
             state_dict, student_state_dict = teacher_model.state_dict(), student_model.state_dict()
             for key, value in state_dict.items():
                 state_dict[key] = alpha_ema * value + (1 - alpha_ema) * student_state_dict[key].detach()
+                
             teacher_model.load_state_dict(state_dict)
         # Data pre-fetch
         source_images, source_masks, source_annotations = source_fetcher.next()
