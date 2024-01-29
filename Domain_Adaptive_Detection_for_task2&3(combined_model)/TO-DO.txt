@@ -1,0 +1,14 @@
+task1：在source domain上训一个deformable detr
+工作1：读一下deformable detr的论文
+工作2：照着论文的细节训练
+
+task2：给提好的特征做一个对抗性特征对齐
+工作1：读一下DA-faster的论文
+工作2：照着论文的细节训练
+
+task3：把上边那俩合在一起做backbone，然后通过师生框架训一个target domain上的detector（学生模型）
+工作1：读一下AT（Adaptive Teacher）的论文
+工作2：照着论文的细节训练
+
+task4：把上面那一堆搓在一起
+可选工作：读一下他的参考文献，看看里边有什么能加进去的方法
